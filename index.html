@@ -1,243 +1,233 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
-    <title>Hand Gesture Particle System</title>
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <style>
-        /* CSS: Fullscreen setup */
-        body { margin: 0; overflow: hidden; background-color: #000000; }
-        canvas { display: block; }
-        /* Video feed is hidden, only used by MediaPipe */
-        #webcam-feed { position: absolute; top: 0; left: 0; z-index: 10; display: none; }
-    </style>
+  <meta charset="UTF-8" />
+  <title>Advanced Three.js Shader Particle System</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+
+  <style>
+    html, body {
+      margin: 0;
+      padding: 0;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background: #000;
+    }
+    canvas {
+      display: block;
+    }
+  </style>
 </head>
 <body>
-    <video id="webcam-feed" autoplay></video>
 
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands"></script>
-    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils"></script>
+<!-- ===================== VERTEX SHADER ===================== -->
+<script id="vertexShader" type="x-shader/x-vertex">
+precision highp float;
 
-    <script id="vertexshader" type="x-shader/x-vertex">
-        uniform float time;
-        uniform float globalScale;
-        uniform float isPinching;
-        uniform vec3 handPosition;
-        
-        attribute float size;
-        attribute vec3 color;
-        attribute float templateId;
-        
-        varying vec3 vColor;
-        
-        void main() {
-            vColor = color;
-            vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
-            
-            // World position for repulsion calculation
-            vec3 worldPosition = (modelMatrix * vec4(position, 1.0)).xyz;
-            float distanceToHand = length(worldPosition - handPosition);
-            
-            // Repulsion based on Pinching gesture
-            if (isPinching > 0.5) {
-                vec3 direction = normalize(worldPosition - handPosition);
-                // Push nearby particles away
-                mvPosition.xyz += direction * max(0.0, 0.5 - distanceToHand) * 5.0; 
-            }
+attribute float size;
 
-            // Simple movement/template logic
-            if (templateId > 1.5 && templateId < 2.5) { 
-                mvPosition.y += sin(time * 0.5) * 0.01; 
-            }
+uniform float time;
+uniform float globalScale;
+uniform float currentTemplate;
+uniform vec3 mousePosition;
 
-            // Final size and screen position
-            gl_PointSize = size * globalScale * (300.0 / -mvPosition.z);
-            gl_Position = projectionMatrix * mvPosition;
-        }
-    </script>
+varying vec3 vColor;
 
-    <script id="fragmentshader" type="x-shader/x-fragment">
-        uniform sampler2D pointTexture;
-        uniform float currentColorIndex; 
+vec3 calculatePosition(vec3 p, float t, float templateID) {
 
-        varying vec3 vColor;
+  // ---------- TEMPLATE 0 : WAVY CLOUD ----------
+  if (templateID < 0.5) {
+    float waveX = sin(p.y * 2.0 + t) * 0.5;
+    float waveY = cos(p.x * 2.0 + t * 1.2) * 0.5;
+    vColor = vec3(0.0, 0.5 + 0.5 * sin(t * 0.8), 1.0);
+    return vec3(p.x + waveX, p.y + waveY, p.z);
+  }
 
-        void main() {
-            // Dynamic Color Cycling
-            vec4 color1 = vec4(1.0, 0.5, 0.0, 1.0); // Orange
-            vec4 color2 = vec4(0.0, 0.5, 1.0, 1.0); // Blue
-            vec4 blendedColor = mix(color1, color2, currentColorIndex);
-            
-            // Texture mapping and transparency
-            vec4 textureColor = texture2D(pointTexture, gl_PointCoord);
+  // ---------- TEMPLATE 1 : BREATHING SPHERE ----------
+  if (templateID < 1.5) {
+    vec3 dir = normalize(p);
+    float pulse = 1.0 + 0.3 * sin(t * 1.5);
+    vColor = vec3(1.0, 0.2 + 0.5 * sin(t * 0.5), 0.0);
+    return dir * pulse * 2.0;
+  }
 
-            // Blending the texture (if loaded) with the dynamic color
-            gl_FragColor = blendedColor * textureColor; 
-            
-            // Create a circular shape with fading edges
-            float r = dot(gl_PointCoord - vec2(0.5), gl_PointCoord - vec2(0.5));
-            float alpha = 1.0 - smoothstep(0.0, 0.25, r);
-            gl_FragColor.a *= alpha;
-        }
-    </script>
+  // ---------- TEMPLATE 2 : FIREWORKS BURST ----------
+  if (templateID < 2.5) {
+    float phase = fract(t * 0.1);
+    vec3 dir = normalize(p);
+    float strength = smoothstep(0.0, 1.0, phase) * 6.0;
+    vColor = fract(p * 3.0 + phase);
+    return dir * strength;
+  }
 
-    <script>
-        // --- Global Variables ---
-        let handLandmarks = null;
-        let particles;
-        const PARTICLE_COUNT = 50000;
-        
-        // --- MediaPipe Hand Tracking Setup ---
-        const videoElement = document.getElementById('webcam-feed');
-        
-        // FIX: Added locateFile for correct model loading
-        const hands = new Hands({
-            locateFile: (file) => {
-                return `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`;
-            }
-        });
+  // ---------- TEMPLATE 3 : HEART SHAPE ----------
+  if (templateID < 3.5) {
+    float th = p.z * 6.28318;
+    float x = 16.0 * pow(sin(th), 3.0);
+    float y = 13.0 * cos(th)
+            - 5.0 * cos(2.0 * th)
+            - 2.0 * cos(3.0 * th)
+            - cos(4.0 * th);
+    vColor = vec3(1.0, 0.2, 0.6);
+    return vec3(x, y, 0.0) * 0.08;
+  }
 
-        hands.setOptions({
-            maxNumHands: 1,
-            modelComplexity: 1,
-            minDetectionConfidence: 0.7,
-            minTrackingConfidence: 0.7
-        });
+  // ---------- TEMPLATE 4 : SATURN RING ----------
+  float theta = p.x * 3.14159;
+  float phi = p.y * 6.28318;
+  float r = 2.5 + p.z * 0.5;
 
-        hands.onResults((results) => {
-            if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
-                handLandmarks = results.multiHandLandmarks[0];
-            } else {
-                handLandmarks = null;
-            }
-        });
+  float cx = cos(phi) * r;
+  float cz = sin(phi) * r;
 
-        const cameraFeed = new Camera(videoElement, {
-            onFrame: async () => {
-                await hands.send({ image: videoElement });
-            },
-            width: 1280,
-            height: 720
-        });
-        cameraFeed.start();
+  float rot = t * 0.05;
+  float rx = cx * cos(rot) - cz * sin(rot);
+  float rz = cx * sin(rot) + cz * cos(rot);
 
-        // Gesture Detection: Pinch (Thumb tip 4 and Index tip 8)
-        function isPinching(landmarks) {
-            if (!landmarks) return false;
-            const thumbTip = landmarks[4];
-            const indexTip = landmarks[8];
-            const distance = Math.sqrt(
-                Math.pow(thumbTip.x - indexTip.x, 2) +
-                Math.pow(thumbTip.y - indexTip.y, 2)
-            );
-            return distance < 0.05; 
-        }
-        
-        // --- Three.js Setup ---
-        const scene = new THREE.Scene();
-        const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
-        const renderer = new THREE.WebGLRenderer({ antialias: true });
-        renderer.setSize(window.innerWidth, window.innerHeight);
-        document.body.appendChild(renderer.domElement);
-        camera.position.z = 5;
+  vColor = vec3(0.5, 0.8, 1.0);
+  return vec3(rx, sin(theta) * 0.2, rz);
+}
 
-        // Handle window resizing
-        window.addEventListener('resize', () => {
-            camera.aspect = window.innerWidth / window.innerHeight;
-            camera.updateProjectionMatrix();
-            renderer.setSize(window.innerWidth, window.innerHeight);
-        });
+void main() {
+  vec3 worldPosition = calculatePosition(position, time, currentTemplate);
 
-        function createParticles() {
-            const particleGeometry = new THREE.BufferGeometry();
-            const positions = new Float32Array(PARTICLE_COUNT * 3);
-            const sizes = new Float32Array(PARTICLE_COUNT);
-            const templateIds = new Float32Array(PARTICLE_COUNT);
+  // ---------- MOUSE REPULSION ----------
+  float dist = distance(worldPosition, mousePosition);
+  if (dist < 2.0) {
+    vec3 repelDir = normalize(worldPosition - mousePosition);
+    worldPosition += repelDir * (2.0 - dist) * 0.3;
+  }
 
-            for (let i = 0; i < PARTICLE_COUNT; i++) {
-                // FIX: Particles are forced to be close to the camera (Z=1 to Z=4)
-                positions[i * 3 + 0] = (Math.random() - 0.5) * 2; // X position: -1 to 1
-                positions[i * 3 + 1] = (Math.random() - 0.5) * 2; // Y position: -1 to 1
-                positions[i * 3 + 2] = Math.random() * 3 + 1;     // Z position: 1 to 4 (Near the camera at Z=5)
-                
-                sizes[i] = Math.random() * 0.1 + 0.05;
-                templateIds[i] = Math.floor(Math.random() * 3); 
-            }
+  vec4 mvPosition = modelViewMatrix * vec4(worldPosition, 1.0);
+  gl_Position = projectionMatrix * mvPosition;
 
-            particleGeometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-            particleGeometry.setAttribute('size', new THREE.BufferAttribute(sizes, 1));
-            particleGeometry.setAttribute('templateId', new THREE.BufferAttribute(templateIds, 1));
+  gl_PointSize = size * globalScale * (500.0 / -mvPosition.z);
+}
+</script>
 
-            // Load Texture (Fallback included)
-            let particleTexture;
-            try {
-                particleTexture = new THREE.TextureLoader().load('spark.png');
-            } catch (e) {
-                particleTexture = new THREE.Texture(); 
-            }
-            
-            const particleMaterial = new THREE.ShaderMaterial({
-                uniforms: {
-                    pointTexture: { value: particleTexture }, 
-                    time: { value: 0.0 },
-                    globalScale: { value: 1.0 },
-                    isPinching: { value: 0.0 },
-                    handPosition: { value: new THREE.Vector3(0, 0, 0) },
-                    currentColorIndex: { value: 0.0 }
-                },
-                vertexShader: document.getElementById('vertexshader').textContent,
-                fragmentShader: document.getElementById('fragmentshader').textContent,
-                blending: THREE.AdditiveBlending,
-                depthTest: false,
-                transparent: true
-            });
+<!-- ===================== FRAGMENT SHADER ===================== -->
+<script id="fragmentShader" type="x-shader/x-fragment">
+precision highp float;
 
-            particles = new THREE.Points(particleGeometry, particleMaterial);
-            scene.add(particles);
-        }
+varying vec3 vColor;
 
-        createParticles();
+void main() {
+  float d = length(gl_PointCoord - vec2(0.5));
+  float alpha = smoothstep(0.5, 0.0, d);
+  gl_FragColor = vec4(vColor, 1.0) * alpha;
+}
+</script>
 
-        // --- Animation Loop ---
-        let time = 0;
-        let currentColorIndex = 0;
+<!-- ===================== THREE.JS APP ===================== -->
+<script src="https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.min.js"></script>
+<script>
+/* ===================== CONSTANTS ===================== */
+const PARTICLE_COUNT = 80000;
+const NUM_TEMPLATES = 5;
+const templateSwitchInterval = 8.0;
 
-        function animate() {
-            requestAnimationFrame(animate);
+/* ===================== SCENE SETUP ===================== */
+const scene = new THREE.Scene();
 
-            time += 0.01;
-            particles.material.uniforms.time.value = time;
-            
-            if (handLandmarks) {
-                // 1. Pinch Detection
-                const pinching = isPinching(handLandmarks);
-                particles.material.uniforms.isPinching.value = pinching ? 1.0 : 0.0;
-                
-                // 2. Control Particle Size (Expansion/Contraction) using Hand Depth (Z)
-                const avgZ = handLandmarks[9].z;
-                const globalScale = THREE.MathUtils.mapLinear(avgZ, 0.1, 0.8, 2.0, 0.5);
-                particles.material.uniforms.globalScale.value = globalScale;
-                
-                // 3. Hand Position for Repulsion/Attraction
-                const mappedX = THREE.MathUtils.mapLinear(handLandmarks[9].x, 0, 1, -5, 5);
-                const mappedY = THREE.MathUtils.mapLinear(handLandmarks[9].y, 0, 1, 5, -5); 
-                particles.material.uniforms.handPosition.value.set(mappedX, mappedY, 0); 
-                
-                // 4. Color Cycling on Gesture
-                const colorSpeed = pinching ? 0.05 : 0.005;
-                currentColorIndex = (currentColorIndex + colorSpeed) % 1; 
-                particles.material.uniforms.currentColorIndex.value = currentColorIndex;
+const camera = new THREE.PerspectiveCamera(
+  60,
+  window.innerWidth / window.innerHeight,
+  0.1,
+  100
+);
+camera.position.z = 5;
 
-            } else {
-                // Default settings when no hand is detected
-                particles.material.uniforms.isPinching.value = 0.0;
-                particles.material.uniforms.globalScale.value = 1.0;
-            }
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.setPixelRatio(window.devicePixelRatio);
+renderer.setClearColor(0x000000, 1);
+document.body.appendChild(renderer.domElement);
 
-            renderer.render(scene, camera);
-        }
+/* ===================== GEOMETRY ===================== */
+const geometry = new THREE.BufferGeometry();
 
-        animate();
-    </script>
+const positions = new Float32Array(PARTICLE_COUNT * 3);
+const sizes = new Float32Array(PARTICLE_COUNT);
+
+for (let i = 0; i < PARTICLE_COUNT; i++) {
+  positions[i * 3 + 0] = (Math.random() * 4 - 2);
+  positions[i * 3 + 1] = (Math.random() * 4 - 2);
+  positions[i * 3 + 2] = (Math.random() * 4 - 2);
+  sizes[i] = Math.random() * 0.15 + 0.05;
+}
+
+geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+geometry.setAttribute('size', new THREE.BufferAttribute(sizes, 1));
+
+/* ===================== UNIFORMS ===================== */
+const uniforms = {
+  time: { value: 0 },
+  globalScale: { value: 1.0 },
+  mousePosition: { value: new THREE.Vector3() },
+  currentTemplate: { value: 0.0 },
+  pointTexture: { value: new THREE.Texture() }
+};
+
+/* ===================== MATERIAL ===================== */
+const material = new THREE.ShaderMaterial({
+  uniforms,
+  vertexShader: document.getElementById('vertexShader').textContent,
+  fragmentShader: document.getElementById('fragmentShader').textContent,
+  transparent: true,
+  blending: THREE.AdditiveBlending,
+  depthWrite: false
+});
+
+const points = new THREE.Points(geometry, material);
+scene.add(points);
+
+/* ===================== MOUSE HANDLING ===================== */
+const mouse = new THREE.Vector2();
+const raycaster = new THREE.Raycaster();
+const planeZ = new THREE.Plane(new THREE.Vector3(0, 0, 1), 2);
+
+window.addEventListener('mousemove', (e) => {
+  mouse.x = (e.clientX / window.innerWidth) * 2 - 1;
+  mouse.y = -(e.clientY / window.innerHeight) * 2 + 1;
+  raycaster.setFromCamera(mouse, camera);
+  const hit = new THREE.Vector3();
+  raycaster.ray.intersectPlane(planeZ, hit);
+  uniforms.mousePosition.value.copy(hit);
+});
+
+/* ===================== RESIZE ===================== */
+window.addEventListener('resize', () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+
+/* ===================== ANIMATION LOOP ===================== */
+let lastTime = performance.now();
+let templateTimer = 0;
+let currentTemplate = 0;
+
+function animate(now) {
+  requestAnimationFrame(animate);
+
+  const delta = (now - lastTime) * 0.001;
+  lastTime = now;
+
+  uniforms.time.value += delta;
+  templateTimer += delta;
+
+  if (templateTimer > templateSwitchInterval) {
+    templateTimer = 0;
+    currentTemplate = (currentTemplate + 1) % NUM_TEMPLATES;
+    uniforms.currentTemplate.value = currentTemplate;
+  }
+
+  renderer.render(scene, camera);
+}
+
+animate(performance.now());
+</script>
+
 </body>
 </html>
