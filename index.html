@@ -3,347 +3,508 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Interactive GLSL Particle System</title>
+    <title>Gesture-Controlled Holographic Particles</title>
     <style>
-        body {
-            margin: 0;
-            padding: 0;
-            overflow: hidden;
-            background-color: #000000;
+        body { margin: 0; overflow: hidden; background-color: #000; font-family: 'Courier New', Courier, monospace; }
+        canvas { display: block; }
+        #video-input { position: absolute; top: 0; left: 0; opacity: 0; pointer-events: none; z-index: -1; }
+        #ui-layer {
+            position: absolute; top: 20px; left: 20px; color: #00ffcc;
+            text-shadow: 0 0 10px #00ffcc; pointer-events: none;
         }
-        canvas {
-            display: block;
+        #loading {
+            position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+            color: white; font-size: 24px; text-align: center;
         }
-        #info {
-            position: absolute;
-            top: 10px;
-            left: 10px;
-            color: #ffffff;
-            font-family: monospace;
-            pointer-events: none;
-            z-index: 10;
-            background: rgba(0, 0, 0, 0.5);
-            padding: 5px;
+        .hud-item { margin-bottom: 5px; font-size: 14px; background: rgba(0,0,0,0.5); padding: 5px; border-left: 2px solid #00ffcc; }
+        #cam-preview {
+            position: absolute; bottom: 20px; right: 20px; width: 160px; height: 120px;
+            border: 1px solid #333; transform: scaleX(-1); opacity: 0.7;
         }
     </style>
-    <!-- Three.js CDN -->
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 </head>
 <body>
-    <div id="info">System: <span id="mode">Wavy Cloud</span> | Particles: 80,000</div>
 
-    <!-- VERTEX SHADER -->
-    <script type="x-shader/x-vertex" id="vertexshader">
-        uniform float time;
-        uniform float currentTemplate;
-        uniform vec3 mousePosition;
-        uniform float globalScale;
-        
-        attribute float size;
-        
-        varying vec3 vColor;
+    <!-- UI & Loading -->
+    <div id="loading">Initializing Neural Interface...<br><span style="font-size:14px; color:#888">(Allow Camera Access)</span></div>
+    <div id="ui-layer">
+        <div class="hud-item" id="status">System: Waiting for Hand...</div>
+        <div class="hud-item" id="mode">Mode: NEBULA (Default)</div>
+        <div class="hud-item">
+            GESTURES:<br>
+            • Open Palm: Expand<br>
+            • Fist: Contract/Black Hole<br>
+            • Pinch: High Density<br>
+            • Swipe Left/Right: Switch Shape<br>
+            • Two Hands: Supernova
+        </div>
+    </div>
+    
+    <!-- Hidden Video for Processing -->
+    <video id="video-input" autoplay playsinline></video>
+    <!-- Visual Feedback of tracking -->
+    <canvas id="cam-preview"></canvas>
 
-        // Constants
-        const float PI = 3.14159265359;
-
-        // Helper: Rotate vector
-        vec3 rotateY(vec3 v, float angle) {
-            float c = cos(angle);
-            float s = sin(angle);
-            return vec3(v.x * c + v.z * s, v.y, -v.x * s + v.z * c);
-        }
-
-        // --- TEMPLATE LOGIC ---
-        
-        // 0. Wavy Cloud
-        void templateCloud(vec3 p, float t, out vec3 pos, out vec3 col) {
-            pos = p;
-            pos.x += sin(t + p.y) * 0.5;
-            pos.y += cos(t + p.x) * 0.5;
-            // Dynamic Blue/Cyan
-            col = vec3(0.0, 0.5 + 0.5 * sin(t * 0.8), 1.0);
-        }
-
-        // 1. Breathing Sphere
-        void templateSphere(vec3 p, float t, out vec3 pos, out vec3 col) {
-            vec3 normP = normalize(p);
-            // Pulse factor
-            float pulse = 1.0 + 0.3 * sin(t * 1.5);
-            pos = normP * length(p) * pulse; // Keep relative distribution but pulse outward
-            // Flatten slightly to form a shell if initial p was random cube, 
-            // but prompt asks to scale normalized p. Let's force sphere shape:
-            pos = normP * 3.0 * pulse; 
-            
-            // Pulsing Fire Color
-            col = vec3(1.0, 0.2 + 0.5 * sin(t * 0.5), 0.0);
-        }
-
-        // 2. Fireworks Burst
-        void templateFireworks(vec3 p, float t, out vec3 pos, out vec3 col) {
-            float phase = fract(t * 0.2); // Slower cycle for visibility
-            
-            // Random direction based on initial position
-            vec3 dir = normalize(p);
-            
-            if (phase < 0.1) {
-                // Reset / Compression phase
-                pos = dir * (phase * 10.0); // Gather center
-            } else {
-                // Explosion phase
-                float expansion = (phase - 0.1) * 15.0; // Rapid expansion
-                pos = dir * expansion;
+    <!-- Import Modules -->
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+                "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/",
+                "@mediapipe/tasks-vision": "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.3"
             }
-            
-            // Random color based on position modulated by time
-            col = vec3(
-                abs(sin(p.x + t)),
-                abs(cos(p.y + t)),
-                abs(sin(p.z + t))
-            );
-        }
-
-        // 3. 2D Heart Shape
-        void templateHeart(vec3 p, float t, out vec3 pos, out vec3 col) {
-            // Map initial Z to parameter t_heart (0 to 2PI)
-            float t_heart = (p.z + 2.0) * PI; 
-            
-            float x = 16.0 * pow(sin(t_heart), 3.0);
-            float y = 13.0 * cos(t_heart) - 5.0 * cos(2.0*t_heart) - 2.0 * cos(3.0*t_heart) - cos(4.0*t_heart);
-            
-            // Scale down to fit view
-            pos = vec3(x * 0.1, y * 0.1, p.x * 0.5); // Use p.x for some depth thickness
-            
-            // Solid Pink/Magenta
-            col = vec3(1.0, 0.2, 0.6);
-        }
-
-        // 4. Rotating Saturn Ring
-        void templateSaturn(vec3 p, float t, out vec3 pos, out vec3 col) {
-            // Toroidal Math
-            // Use initial X, Y to define angle theta, phi
-            float theta = p.x * PI;
-            float phi = p.y * PI;
-            float majorR = 3.0;
-            float minorR = 0.5 + p.z * 0.2; // Variation in ring thickness
-            
-            float tx = (majorR + minorR * cos(theta)) * cos(phi);
-            float ty = (majorR + minorR * cos(theta)) * sin(phi); // Actually Z in standard math, but Y here
-            float tz = minorR * sin(theta);
-            
-            vec3 rawPos = vec3(tx, tz, ty); // Flattened ring
-            
-            // Rotation Matrix (Y axis rotation)
-            pos = rotateY(rawPos, t * 0.5);
-            
-            // Icy Blue/White
-            col = vec3(0.5, 0.8, 1.0);
-        }
-
-        vec3 calculatePosition(vec3 p, float t, float templateID, out vec3 colorResult) {
-            vec3 finalPos = p;
-            
-            // In a production shader, mixing logic would be cleaner, 
-            // but standard if/else works for strictly defined states.
-            if (templateID < 0.5) {
-                templateCloud(p, t, finalPos, colorResult);
-            } else if (templateID < 1.5) {
-                templateSphere(p, t, finalPos, colorResult);
-            } else if (templateID < 2.5) {
-                templateFireworks(p, t, finalPos, colorResult);
-            } else if (templateID < 3.5) {
-                templateHeart(p, t, finalPos, colorResult);
-            } else {
-                templateSaturn(p, t, finalPos, colorResult);
-            }
-            
-            return finalPos;
-        }
-
-        void main() {
-            // 1. Calculate Base Animation Position
-            vec3 animatedPos = calculatePosition(position, time, currentTemplate, vColor);
-
-            // 2. Mouse Repulsion Logic
-            // Calculate distance between particle and mouse in world space
-            float dist = distance(animatedPos, mousePosition);
-            
-            if (dist < 2.0) {
-                vec3 repulseDir = normalize(animatedPos - mousePosition);
-                float force = (2.0 - dist) * 0.3; // Strong repulsion
-                animatedPos += repulseDir * force;
-            }
-
-            // 3. Final Transformations
-            vec4 mvPosition = modelViewMatrix * vec4(animatedPos, 1.0);
-            gl_Position = projectionMatrix * mvPosition;
-
-            // 4. Size Attenuation
-            gl_PointSize = size * globalScale * (500.0 / -mvPosition.z);
         }
     </script>
 
-    <!-- FRAGMENT SHADER -->
-    <script type="x-shader/x-fragment" id="fragmentshader">
-        varying vec3 vColor;
+    <script type="module">
+        import * as THREE from 'three';
+        import { FilesetResolver, HandLandmarker } from '@mediapipe/tasks-vision';
+
+        // --- CONFIGURATION ---
+        const PARTICLE_COUNT = 80000; // High performance count
+        const MODES = ['NEBULA', 'HEART', 'FLOWER', 'SATURN', 'FIREWORKS'];
         
-        // Placeholder for texture uniform (technically unused in logic below, but required by prompt)
-        uniform sampler2D pointTexture; 
-
-        void main() {
-            // Calculate distance from center of the point (0.0 to 0.5)
-            // gl_PointCoord returns vec2(0..1, 0..1)
-            vec2 coord = gl_PointCoord - vec2(0.5);
-            float dist = length(coord);
-
-            // Soft Circle Logic
-            // discard pixels outside circle radius 0.5
-            if (dist > 0.5) discard;
-
-            // Smoothstep for glow effect (inner 0.0 to outer 0.5)
-            float alpha = 1.0 - smoothstep(0.0, 0.5, dist);
-
-            gl_FragColor = vec4(vColor, 1.0) * alpha;
-        }
-    </script>
-
-    <!-- MAIN JAVASCRIPT -->
-    <script>
-        // --- 1. CONFIGURATION ---
-        const PARTICLE_COUNT = 80000;
-        const NUM_TEMPLATES = 5;
-        const TEMPLATE_SWITCH_INTERVAL = 8.0; // Seconds
-        const TEMPLATE_NAMES = [
-            "Wavy Cloud", 
-            "Breathing Sphere", 
-            "Fireworks Burst", 
-            "2D Heart Shape", 
-            "Rotating Saturn Ring"
-        ];
-
-        // --- 2. SETUP ---
-        const scene = new THREE.Scene();
-        
-        // Z = 5 Camera
-        const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
-        camera.position.z = 5;
-
-        // Renderer
-        const renderer = new THREE.WebGLRenderer({ antialias: true });
-        renderer.setSize(window.innerWidth, window.innerHeight);
-        renderer.setPixelRatio(window.devicePixelRatio);
-        document.body.appendChild(renderer.domElement);
-
-        // --- 3. PARTICLES ---
-        const geometry = new THREE.BufferGeometry();
-        const positions = [];
-        const sizes = [];
-
-        // Initialize particles
-        for (let i = 0; i < PARTICLE_COUNT; i++) {
-            // Random Cube: -2 to 2
-            const x = (Math.random() * 4) - 2;
-            const y = (Math.random() * 4) - 2;
-            const z = (Math.random() * 4) - 2;
-
-            positions.push(x, y, z);
-
-            // Size: 0.05 to 0.2
-            sizes.push(0.05 + Math.random() * 0.15);
-        }
-
-        geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
-        geometry.setAttribute('size', new THREE.Float32BufferAttribute(sizes, 1));
-
-        // Uniforms
-        const uniforms = {
-            time: { value: 0.0 },
-            globalScale: { value: 1.0 },
-            mousePosition: { value: new THREE.Vector3(999, 999, 999) }, // Init off-screen
-            currentTemplate: { value: 0.0 },
-            pointTexture: { value: new THREE.Texture() } // Empty texture prevents 404
+        // --- GLOBAL STATE ---
+        const state = {
+            handDetected: false,
+            handPosition: new THREE.Vector3(0, 0, 0), // Normalized -1 to 1
+            pinch: 0.0, // 0 to 1
+            expansion: 0.0, // -1 (contract) to 1 (expand)
+            modeIndex: 0,
+            targetModeIndex: 0,
+            rotationSpeed: 0.2,
+            doubleHand: 0.0, // 0 or 1
+            swipeCooldown: 0
         };
 
+        // --- SHADERS ---
+
+        const vertexShader = `
+            uniform float uTime;
+            uniform float uMode; // 0=Nebula, 1=Heart, 2=Flower, 3=Saturn, 4=Fireworks
+            uniform float uPinch;
+            uniform float uExpansion;
+            uniform vec3 uHandPos;
+            uniform float uDoubleHand;
+            
+            attribute float aRandom;
+            attribute vec3 aRandomVec;
+            
+            varying vec3 vColor;
+            varying float vAlpha;
+
+            // --- SHAPE FUNCTIONS ---
+
+            // 1. Heart Function
+            vec3 getHeart(float t, float r) {
+                float x = 16.0 * pow(sin(t), 3.0);
+                float y = 13.0 * cos(t) - 5.0 * cos(2.0*t) - 2.0 * cos(3.0*t) - cos(4.0*t);
+                float z = r * 10.0;
+                return vec3(x, y, z) * 0.15;
+            }
+
+            // 2. Flower Function
+            vec3 getFlower(float t, float r) {
+                float petal = abs(cos(t * 3.0)) + 0.5;
+                float rad = r * 5.0 * petal;
+                return vec3(cos(t) * rad, sin(t) * rad, (r-0.5)*2.0);
+            }
+
+            // 3. Saturn Function
+            vec3 getSaturn(float t, float r) {
+                // Ring
+                if (r > 0.4) {
+                    float ringRad = 4.0 + (r * 2.0);
+                    return vec3(cos(t) * ringRad, sin(t) * ringRad, (aRandom-0.5) * 0.2);
+                } 
+                // Planet
+                else {
+                    float phi = acos(2.0 * r - 1.0) - 1.57; // distribute vertically
+                    float theta = t;
+                    float rad = 2.0;
+                    return vec3(rad * cos(theta) * cos(phi), rad * sin(theta) * cos(phi), rad * sin(phi));
+                }
+            }
+
+            // 4. Fireworks / Burst
+            vec3 getFireworks(vec3 basePos) {
+                // Explode outwards based on random vector
+                float burst = sin(uTime * 2.0 - aRandom * 10.0);
+                return basePos + (aRandomVec * (burst > 0.8 ? burst * 5.0 : 0.0));
+            }
+
+            // 0. Abstract/Nebula (Noise driven)
+            vec3 getNebula(vec3 base) {
+                float noise = sin(base.x * 2.0 + uTime) * cos(base.y * 2.0 + uTime);
+                return base * (1.0 + noise * 0.5);
+            }
+
+            // Helper to mix shapes smoothly
+            vec3 lerp3(vec3 a, vec3 b, float w) {
+                return mix(a, b, w);
+            }
+
+            void main() {
+                // Basic parametric inputs
+                float t = aRandom * 6.28318 * 2.0 + uTime * 0.1; // Angle
+                float r = aRandomVec.x; // Radius variation
+                
+                // --- GEOMETRY CALCULATION ---
+                
+                // Base Sphere/Cloud for Nebula
+                vec3 posNebula = aRandomVec * 5.0; 
+                posNebula = getNebula(posNebula);
+
+                vec3 posHeart = getHeart(t, r - 0.5);
+                vec3 posFlower = getFlower(t, r);
+                vec3 posSaturn = getSaturn(t, r);
+                vec3 posFire = getFireworks(posSaturn); // Base fire on saturn ring logic initially
+
+                // --- BLENDING MODES ---
+                // We use smoothstep logic to mix based on uMode integer
+                // This is a rough 4-way blend. Ideally handled via mix weights passed from JS, 
+                // but doing it here allows "morphing" logic.
+                
+                vec3 finalPos = posNebula;
+                
+                // Smooth mixing logic (simple linear interpolation for demo)
+                // 0->1
+                if(uMode >= 0.0 && uMode < 1.0) finalPos = mix(posNebula, posHeart, uMode);
+                // 1->2
+                else if(uMode >= 1.0 && uMode < 2.0) finalPos = mix(posHeart, posFlower, uMode - 1.0);
+                // 2->3
+                else if(uMode >= 2.0 && uMode < 3.0) finalPos = mix(posFlower, posSaturn, uMode - 2.0);
+                // 3->4
+                else if(uMode >= 3.0 && uMode <= 4.0) finalPos = mix(posSaturn, posFire, uMode - 3.0);
+                // Wrap 4->0 (not implemented strictly in cycle here, handled in JS)
+
+                // --- GESTURE INTERACTION ---
+                
+                // 1. Expansion/Contraction (Palm Open/Close)
+                // If uExpansion is high (open hand), particles fly out. 
+                // If negative (fist), they suck in.
+                float expandFactor = 1.0 + (uExpansion * 1.5); 
+                finalPos *= expandFactor;
+
+                // 2. Attraction/Repulsion to Hand
+                // Convert handPos (screen space ish) to world roughly
+                vec3 handWorld = uHandPos * 10.0; 
+                float dist = distance(finalPos, handWorld);
+                
+                // Repulse if hand is close
+                if (dist < 3.0) {
+                    vec3 dir = normalize(finalPos - handWorld);
+                    finalPos += dir * (3.0 - dist) * 2.0;
+                }
+
+                // 3. Pinch Effect (Density / Jitter)
+                if (uPinch > 0.5) {
+                    finalPos += aRandomVec * uPinch * 0.5; // Jitter
+                }
+
+                // 4. Double Hand Supernova
+                if (uDoubleHand > 0.5) {
+                    finalPos *= 1.0 + sin(uTime * 10.0) * 0.2; // Vibration
+                    finalPos += aRandomVec * 5.0 * uDoubleHand; // Explosion
+                }
+
+                // 5. Rotation
+                float c = cos(uTime * 0.2);
+                float s = sin(uTime * 0.2);
+                mat2 rot = mat2(c, -s, s, c);
+                finalPos.xz = rot * finalPos.xz;
+
+                vec4 mvPosition = modelViewMatrix * vec4(finalPos, 1.0);
+                gl_Position = projectionMatrix * mvPosition;
+
+                // --- SIZE & COLOR ---
+                gl_PointSize = (4.0 * (1.0 + uPinch * 5.0) + (uDoubleHand * 10.0)) * (1.0 / -mvPosition.z);
+                
+                // Color logic
+                vec3 colorBase = vec3(0.1, 0.4, 1.0); // Blueish
+                vec3 colorHot = vec3(1.0, 0.2, 0.5);  // Reddish
+                
+                float mixVal = smoothstep(-2.0, 2.0, sin(uTime + finalPos.x));
+                
+                // Change color based on mode
+                if(uMode > 0.5 && uMode < 1.5) colorBase = vec3(1.0, 0.05, 0.2); // Heart Red
+                if(uMode > 1.5 && uMode < 2.5) colorBase = vec3(1.0, 0.8, 0.2); // Flower Gold
+                if(uMode > 2.5 && uMode < 3.5) colorBase = vec3(0.5, 0.8, 1.0); // Saturn Cyan
+                
+                vColor = mix(colorBase, colorHot, aRandom);
+                vColor += vec3(uPinch); // Whiten on pinch
+
+                // Soft edges
+                vAlpha = 1.0;
+            }
+        `;
+
+        const fragmentShader = `
+            varying vec3 vColor;
+            varying float vAlpha;
+
+            void main() {
+                // Circular particle logic
+                vec2 coord = gl_PointCoord - vec2(0.5);
+                float dist = length(coord);
+                
+                // Soft glow
+                float alpha = 1.0 - smoothstep(0.3, 0.5, dist);
+                if (alpha < 0.01) discard;
+
+                // Add inner core brightness
+                vec3 finalColor = vColor + (0.5 * (1.0 - dist));
+
+                gl_FragColor = vec4(finalColor, alpha * vAlpha);
+            }
+        `;
+
+        // --- THREE.JS SETUP ---
+        const scene = new THREE.Scene();
+        // Fog for depth
+        scene.fog = new THREE.FogExp2(0x000000, 0.02);
+
+        const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 1000);
+        camera.position.z = 20;
+
+        const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.setPixelRatio(window.devicePixelRatio);
+        renderer.setClearColor(0x000000);
+        document.body.appendChild(renderer.domElement);
+
+        // --- PARTICLE SYSTEM ---
+        const geometry = new THREE.BufferGeometry();
+        const positions = new Float32Array(PARTICLE_COUNT * 3);
+        const randoms = new Float32Array(PARTICLE_COUNT);
+        const randomVecs = new Float32Array(PARTICLE_COUNT * 3);
+
+        for (let i = 0; i < PARTICLE_COUNT; i++) {
+            positions[i * 3] = 0;
+            positions[i * 3 + 1] = 0;
+            positions[i * 3 + 2] = 0;
+
+            randoms[i] = Math.random();
+            
+            // Random sphere vector
+            const theta = Math.random() * Math.PI * 2;
+            const phi = Math.acos(2 * Math.random() - 1);
+            randomVecs[i * 3] = Math.sin(phi) * Math.cos(theta);
+            randomVecs[i * 3 + 1] = Math.sin(phi) * Math.sin(theta);
+            randomVecs[i * 3 + 2] = Math.cos(phi);
+        }
+
+        geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+        geometry.setAttribute('aRandom', new THREE.BufferAttribute(randoms, 1));
+        geometry.setAttribute('aRandomVec', new THREE.BufferAttribute(randomVecs, 3));
+
         const material = new THREE.ShaderMaterial({
-            uniforms: uniforms,
-            vertexShader: document.getElementById('vertexshader').textContent,
-            fragmentShader: document.getElementById('fragmentshader').textContent,
-            blending: THREE.AdditiveBlending,
-            depthTest: false,
-            transparent: true
+            vertexShader,
+            fragmentShader,
+            uniforms: {
+                uTime: { value: 0 },
+                uMode: { value: 0 },
+                uHandPos: { value: new THREE.Vector3(0, 0, 0) },
+                uExpansion: { value: 0 },
+                uPinch: { value: 0 },
+                uDoubleHand: { value: 0 }
+            },
+            transparent: true,
+            depthWrite: false,
+            blending: THREE.AdditiveBlending
         });
 
-        const particleSystem = new THREE.Points(geometry, material);
-        scene.add(particleSystem);
+        const particles = new THREE.Points(geometry, material);
+        scene.add(particles);
 
-        // --- 4. EVENT LISTENERS ---
-        
-        // Resize
+        // --- MEDIAPIPE SETUP ---
+        const video = document.getElementById('video-input');
+        const previewCanvas = document.getElementById('cam-preview');
+        const previewCtx = previewCanvas.getContext('2d');
+        let handLandmarker;
+        let lastVideoTime = -1;
+
+        async function initMediaPipe() {
+            const vision = await FilesetResolver.forVisionTasks(
+                "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.3/wasm"
+            );
+            handLandmarker = await HandLandmarker.createFromOptions(vision, {
+                baseOptions: {
+                    modelAssetPath: `https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task`,
+                    delegate: "GPU"
+                },
+                runningMode: "VIDEO",
+                numHands: 2
+            });
+            startCamera();
+        }
+
+        async function startCamera() {
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+                video.srcObject = stream;
+                video.addEventListener("loadeddata", () => {
+                    document.getElementById('loading').style.display = 'none';
+                    animate();
+                });
+            } catch (err) {
+                document.getElementById('loading').innerHTML = "Camera Access Denied.<br>Reload and allow camera.";
+                console.error(err);
+            }
+        }
+
+        // --- GESTURE LOGIC ---
+        function processGestures(results) {
+            const landmarks = results.landmarks;
+            state.handDetected = landmarks.length > 0;
+            state.doubleHand = landmarks.length > 1 ? 1.0 : 0.0;
+
+            document.getElementById('status').innerText = state.handDetected 
+                ? `System: Tracking ${landmarks.length} Hand(s)` 
+                : "System: Waiting for Hand...";
+
+            if (state.handDetected) {
+                const hand1 = landmarks[0];
+                
+                // 1. Hand Position (Average of Wrist + Middle Finger Tip)
+                // Invert X because webcam is mirrored logic vs 3D space
+                const x = (hand1[0].x + hand1[9].x) / 2; 
+                const y = (hand1[0].y + hand1[9].y) / 2;
+                
+                // Map 0..1 to -1..1
+                const nx = (x - 0.5) * 2; 
+                const ny = -(y - 0.5) * 2; // Flip Y for 3D
+                
+                // Smooth damping
+                state.handPosition.x += (nx - state.handPosition.x) * 0.1;
+                state.handPosition.y += (ny - state.handPosition.y) * 0.1;
+
+                // 2. Pinch (Distance between Thumb Tip [4] and Index Tip [8])
+                const pinchDist = Math.hypot(hand1[4].x - hand1[8].x, hand1[4].y - hand1[8].y);
+                const isPinch = pinchDist < 0.05;
+                state.pinch += ((isPinch ? 1.0 : 0.0) - state.pinch) * 0.1;
+
+                // 3. Open vs Closed (Average distance of tips from wrist)
+                const tips = [8, 12, 16, 20];
+                let avgTipDist = 0;
+                tips.forEach(i => {
+                    avgTipDist += Math.hypot(hand1[i].x - hand1[0].x, hand1[i].y - hand1[0].y);
+                });
+                avgTipDist /= 4;
+                
+                // Calibrate: < 0.2 is Fist, > 0.4 is Open
+                let targetExpand = 0;
+                if(avgTipDist > 0.35) targetExpand = 1.0; // Open
+                else if(avgTipDist < 0.25) targetExpand = -1.0; // Fist (Black hole)
+                
+                state.expansion += (targetExpand - state.expansion) * 0.05;
+
+                // 4. Swipe Detection for Mode Switch
+                // Simple logic: if hand moves fast in X while open
+                if (state.swipeCooldown <= 0 && Math.abs(state.handPosition.x) > 0.6) {
+                     // Check velocity roughly by comparing to last frame (simplified here by position threshold)
+                     // A real swipe needs velocity, but position edge trigger works for simple demo
+                     /* For robustness, let's just cycle if they hold at edge */
+                }
+                
+                // Let's implement a cleaner Swipe:
+                // If velocity X is high. We need previous X.
+                // Storing previous X in a closure or global
+                if (!state.lastX) state.lastX = nx;
+                const dx = nx - state.lastX;
+                state.lastX = nx;
+                
+                if (Math.abs(dx) > 0.15 && state.swipeCooldown <= 0) {
+                    // Swipe detected
+                    if (dx > 0) state.targetModeIndex = (state.targetModeIndex + 1) % MODES.length;
+                    else state.targetModeIndex = (state.targetModeIndex - 1 + MODES.length) % MODES.length;
+                    
+                    state.swipeCooldown = 30; // Frames
+                    
+                    // Visual feedback
+                    document.getElementById('mode').style.color = '#fff';
+                    setTimeout(() => document.getElementById('mode').style.color = '#00ffcc', 200);
+                }
+            } else {
+                // Reset to idle
+                state.expansion += (0 - state.expansion) * 0.05;
+                state.pinch += (0 - state.pinch) * 0.1;
+            }
+
+            if(state.swipeCooldown > 0) state.swipeCooldown--;
+            
+            // Update Mode UI
+            document.getElementById('mode').innerText = `Mode: ${MODES[state.targetModeIndex]}`;
+            
+            // Smoothly interpolate shader mode uniform
+            // We just approach the integer value
+            const diff = state.targetModeIndex - material.uniforms.uMode.value;
+            if (Math.abs(diff) > 0.01) {
+                material.uniforms.uMode.value += diff * 0.05;
+            }
+        }
+
+        // --- MAIN LOOP ---
+        const clock = new THREE.Clock();
+
+        function animate() {
+            requestAnimationFrame(animate);
+
+            // 1. Process MediaPipe
+            if (video.videoWidth > 0 && video.currentTime !== lastVideoTime) {
+                lastVideoTime = video.currentTime;
+                if (handLandmarker) {
+                    const results = handLandmarker.detectForVideo(video, performance.now());
+                    processGestures(results);
+                    
+                    // Draw Debug Preview
+                    previewCanvas.width = video.videoWidth;
+                    previewCanvas.height = video.videoHeight;
+                    previewCtx.clearRect(0, 0, previewCanvas.width, previewCanvas.height);
+                    if(results.landmarks) {
+                        for (const landmarks of results.landmarks) {
+                            for(const point of landmarks) {
+                                previewCtx.beginPath();
+                                previewCtx.arc(point.x * previewCanvas.width, point.y * previewCanvas.height, 5, 0, 2*Math.PI);
+                                previewCtx.fillStyle = "#00ffcc";
+                                previewCtx.fill();
+                            }
+                        }
+                    }
+                }
+            }
+
+            // 2. Update Uniforms
+            material.uniforms.uTime.value = clock.getElapsedTime();
+            material.uniforms.uHandPos.value.copy(state.handPosition);
+            material.uniforms.uExpansion.value = state.expansion;
+            material.uniforms.uPinch.value = state.pinch;
+            
+            // Double hand triggers "supernova" expansion in shader + color shift
+            // Smooth blending for double hand
+            const targetDouble = state.doubleHand;
+            material.uniforms.uDoubleHand.value += (targetDouble - material.uniforms.uDoubleHand.value) * 0.1;
+
+            // 3. Render
+            // Gentle idle rotation
+            particles.rotation.y += 0.001;
+            
+            // Hand control rotation (tilt)
+            particles.rotation.x = state.handPosition.y * 0.2;
+            particles.rotation.z = state.handPosition.x * 0.2;
+
+            renderer.render(scene, camera);
+        }
+
+        // Resize Handler
         window.addEventListener('resize', () => {
             camera.aspect = window.innerWidth / window.innerHeight;
             camera.updateProjectionMatrix();
             renderer.setSize(window.innerWidth, window.innerHeight);
         });
 
-        // Mouse Move (Map 2D screen to 3D world at Z approx -2)
-        const mouse = new THREE.Vector2();
-        const raycaster = new THREE.Raycaster();
-        const interactionPlaneZ = -2;
+        initMediaPipe();
 
-        window.addEventListener('mousemove', (event) => {
-            // Normalize mouse coordinates (-1 to 1)
-            mouse.x = (event.clientX / window.innerWidth) * 2 - 1;
-            mouse.y = -(event.clientY / window.innerHeight) * 2 + 1;
-
-            // Unproject logic to find position at specific Z depth
-            // 1. Create vector at mouse position on near plane
-            let vec = new THREE.Vector3(mouse.x, mouse.y, 0.5);
-            
-            // 2. Unproject: converts from screen space to world space
-            vec.unproject(camera);
-            
-            // 3. Calculate direction from camera to this unprojected point
-            vec.sub(camera.position).normalize();
-            
-            // 4. Calculate distance scalar to hit plane Z = -2
-            // formula: distance = (targetZ - cameraZ) / directionZ
-            let distance = (interactionPlaneZ - camera.position.z) / vec.z;
-            
-            // 5. Final position
-            let pos = new THREE.Vector3().copy(camera.position).add(vec.multiplyScalar(distance));
-            
-            uniforms.mousePosition.value.copy(pos);
-        });
-
-        // --- 5. ANIMATION LOOP ---
-        const clock = new THREE.Clock();
-        let templateTimer = 0;
-        let currentTemplateIndex = 0;
-        const modeLabel = document.getElementById('mode');
-
-        function animate() {
-            requestAnimationFrame(animate);
-
-            const delta = clock.getDelta();
-            const elapsedTime = clock.getElapsedTime();
-
-            // Update Shader Time
-            uniforms.time.value = elapsedTime;
-
-            // Template Switching Logic
-            templateTimer += delta;
-            if (templateTimer >= TEMPLATE_SWITCH_INTERVAL) {
-                templateTimer = 0;
-                currentTemplateIndex = (currentTemplateIndex + 1) % NUM_TEMPLATES;
-                uniforms.currentTemplate.value = parseFloat(currentTemplateIndex);
-                
-                // Update UI text
-                modeLabel.innerText = TEMPLATE_NAMES[currentTemplateIndex];
-            }
-
-            renderer.render(scene, camera);
-        }
-
-        animate();
     </script>
 </body>
 </html>
