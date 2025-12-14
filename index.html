@@ -15,8 +15,8 @@
     <video id="webcam-feed" autoplay></video>
 
     <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4.1675466046/hands.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils@0.3.1675466046/camera_utils.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils"></script>
 
     <script id="vertexshader" type="x-shader/x-vertex">
         uniform float time;
@@ -34,7 +34,7 @@
             vColor = color;
             vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
             
-            // World position calculation
+            // World position for repulsion calculation
             vec3 worldPosition = (modelMatrix * vec4(position, 1.0)).xyz;
             float distanceToHand = length(worldPosition - handPosition);
             
@@ -51,7 +51,6 @@
             }
 
             // Final size and screen position
-            // Point size is scaled by the distance from the camera (-mvPosition.z)
             gl_PointSize = size * globalScale * (300.0 / -mvPosition.z);
             gl_Position = projectionMatrix * mvPosition;
         }
@@ -90,9 +89,11 @@
         
         // --- MediaPipe Hand Tracking Setup ---
         const videoElement = document.getElementById('webcam-feed');
+        
+        // FIX: Added locateFile to correctly load MediaPipe models from CDN
         const hands = new Hands({
             locateFile: (file) => {
-                return `https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4/${file}`;
+                return `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`;
             }
         });
 
@@ -118,9 +119,10 @@
             width: 1280,
             height: 720
         });
+        // Start the camera feed 
         cameraFeed.start();
 
-        // Gesture Detection: Check distance between Thumb tip (4) and Index tip (8)
+        // Gesture Detection: Pinch (Thumb tip 4 and Index tip 8)
         function isPinching(landmarks) {
             if (!landmarks) return false;
             const thumbTip = landmarks[4];
@@ -129,7 +131,7 @@
                 Math.pow(thumbTip.x - indexTip.x, 2) +
                 Math.pow(thumbTip.y - indexTip.y, 2)
             );
-            return distance < 0.05; // Tight pinch threshold
+            return distance < 0.05; 
         }
         
         // --- Three.js Setup ---
@@ -160,20 +162,20 @@
                 positions[i * 3 + 2] = (Math.random() - 0.5) * 10;
 
                 sizes[i] = Math.random() * 0.1 + 0.05;
-                templateIds[i] = Math.floor(Math.random() * 3); // 0, 1, or 2
+                templateIds[i] = Math.floor(Math.random() * 3); 
             }
 
             particleGeometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
             particleGeometry.setAttribute('size', new THREE.BufferAttribute(sizes, 1));
             particleGeometry.setAttribute('templateId', new THREE.BufferAttribute(templateIds, 1));
 
-            // Load Texture or use a default if it fails (for robustness on GitHub Pages)
+            // Load Texture (Fallback included for missing spark.png)
             let particleTexture;
             try {
-                // Try loading the specific texture (if you upload one named 'spark.png')
+                // Tries to load spark.png (if available in the repo root)
                 particleTexture = new THREE.TextureLoader().load('spark.png');
             } catch (e) {
-                // If loading fails, use an empty texture (particles will be solid circles)
+                // Fallback: If loading fails, use an empty texture (particles will be solid circles)
                 particleTexture = new THREE.Texture(); 
             }
             
@@ -215,16 +217,13 @@
                 particles.material.uniforms.isPinching.value = pinching ? 1.0 : 0.0;
                 
                 // 2. Control Particle Size (Expansion/Contraction) using Hand Depth (Z)
-                // We use the 9th landmark (base of middle finger) for depth
                 const avgZ = handLandmarks[9].z;
-                // Map Z depth (near 0.1, far 0.8) to a scale factor (2.0 big, 0.5 small)
                 const globalScale = THREE.MathUtils.mapLinear(avgZ, 0.1, 0.8, 2.0, 0.5);
                 particles.material.uniforms.globalScale.value = globalScale;
                 
                 // 3. Hand Position for Repulsion/Attraction
-                // Map normalized X/Y (0-1 from MediaPipe) to Three.js world coordinates (-5 to 5)
                 const mappedX = THREE.MathUtils.mapLinear(handLandmarks[9].x, 0, 1, -5, 5);
-                const mappedY = THREE.MathUtils.mapLinear(handLandmarks[9].y, 0, 1, 5, -5); // Y is usually inverted
+                const mappedY = THREE.MathUtils.mapLinear(handLandmarks[9].y, 0, 1, 5, -5); 
                 particles.material.uniforms.handPosition.value.set(mappedX, mappedY, 0); 
                 
                 // 4. Color Cycling on Gesture
