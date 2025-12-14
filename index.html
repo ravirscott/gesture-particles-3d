@@ -90,7 +90,7 @@
         // --- MediaPipe Hand Tracking Setup ---
         const videoElement = document.getElementById('webcam-feed');
         
-        // FIX: Added locateFile to correctly load MediaPipe models from CDN
+        // FIX: Added locateFile for correct model loading
         const hands = new Hands({
             locateFile: (file) => {
                 return `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`;
@@ -119,7 +119,6 @@
             width: 1280,
             height: 720
         });
-        // Start the camera feed 
         cameraFeed.start();
 
         // Gesture Detection: Pinch (Thumb tip 4 and Index tip 8)
@@ -156,11 +155,11 @@
             const templateIds = new Float32Array(PARTICLE_COUNT);
 
             for (let i = 0; i < PARTICLE_COUNT; i++) {
-                // Random initial positions
-                positions[i * 3 + 0] = (Math.random() - 0.5) * 10;
-                positions[i * 3 + 1] = (Math.random() - 0.5) * 10;
-                positions[i * 3 + 2] = (Math.random() - 0.5) * 10;
-
+                // FIX: Particles are forced to be close to the camera (Z=1 to Z=4)
+                positions[i * 3 + 0] = (Math.random() - 0.5) * 2; // X position: -1 to 1
+                positions[i * 3 + 1] = (Math.random() - 0.5) * 2; // Y position: -1 to 1
+                positions[i * 3 + 2] = Math.random() * 3 + 1;     // Z position: 1 to 4 (Near the camera at Z=5)
+                
                 sizes[i] = Math.random() * 0.1 + 0.05;
                 templateIds[i] = Math.floor(Math.random() * 3); 
             }
@@ -169,13 +168,11 @@
             particleGeometry.setAttribute('size', new THREE.BufferAttribute(sizes, 1));
             particleGeometry.setAttribute('templateId', new THREE.BufferAttribute(templateIds, 1));
 
-            // Load Texture (Fallback included for missing spark.png)
+            // Load Texture (Fallback included)
             let particleTexture;
             try {
-                // Tries to load spark.png (if available in the repo root)
                 particleTexture = new THREE.TextureLoader().load('spark.png');
             } catch (e) {
-                // Fallback: If loading fails, use an empty texture (particles will be solid circles)
                 particleTexture = new THREE.Texture(); 
             }
             
