@@ -1,0 +1,225 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Hand Gesture Particle System</title>
+    <style>
+        /* CSS: पेज को फुलस्क्रीन करने के लिए */
+        body { margin: 0; overflow: hidden; }
+        canvas { display: block; }
+        /* webcam-feed को छिपाने के लिए, ताकि केवल 3D आउटपुट दिखे */
+        #webcam-feed { position: absolute; top: 0; left: 0; width: 320px; height: 240px; z-index: 10; display: none; }
+    </style>
+</head>
+<body>
+    <video id="webcam-feed" autoplay></video>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4.1675466046/hands.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils@0.3.1675466046/camera_utils.js"></script>
+
+    <script id="vertexshader" type="x-shader/x-vertex">
+        uniform float time;
+        uniform float globalScale;
+        uniform float isPinching;
+        uniform vec3 handPosition;
+        
+        attribute float size;
+        attribute vec3 color;
+        attribute float templateId;
+        
+        varying vec3 vColor;
+        
+        void main() {
+            vColor = color;
+            vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
+            
+            // Gesture Interaction (Repulsion)
+            vec3 worldPosition = (modelMatrix * vec4(position, 1.0)).xyz;
+            float distanceToHand = length(worldPosition - handPosition);
+            
+            if (isPinching > 0.5) {
+                vec3 direction = normalize(worldPosition - handPosition);
+                mvPosition.xyz += direction * max(0.0, 0.5 - distanceToHand) * 5.0; 
+            }
+
+            // Template Shape Logic (Basic Example: Firework Burst)
+            if (templateId > 1.5 && templateId < 2.5) { 
+                mvPosition.y += sin(time * 0.5) * 0.01; 
+            }
+
+            // Size and Final Position
+            gl_PointSize = size * globalScale * (300.0 / -mvPosition.z);
+            gl_Position = projectionMatrix * mvPosition;
+        }
+    </script>
+
+    <script id="fragmentshader" type="x-shader/x-fragment">
+        uniform vec3 color;
+        uniform sampler2D pointTexture;
+        uniform float currentColorIndex; 
+
+        varying vec3 vColor;
+
+        void main() {
+            // Simple color cycling demo
+            vec4 color1 = vec4(1.0, 0.5, 0.0, 1.0); 
+            vec4 color2 = vec4(0.0, 0.5, 1.0, 1.0); 
+            vec4 blendedColor = mix(color1, color2, currentColorIndex);
+
+            gl_FragColor = blendedColor * texture2D(pointTexture, gl_PointCoord); 
+            
+            // Fading edges 
+            float r = 0.0, alpha = 1.0;
+            r = dot(gl_PointCoord - vec2(0.5), gl_PointCoord - vec2(0.5));
+            alpha = 1.0 - smoothstep(0.0, 0.25, r);
+            gl_FragColor.a *= alpha;
+        }
+    </script>
+
+    <script>
+        // --- Hand Gesture Tracking Setup (पिछले उत्तर का Section 2) ---
+        let handLandmarks = null;
+
+        const videoElement = document.getElementById('webcam-feed');
+        const hands = new Hands({
+            locateFile: (file) => {
+                return `https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4/${file}`;
+            }
+        });
+
+        hands.setOptions({
+            maxNumHands: 1,
+            modelComplexity: 1,
+            minDetectionConfidence: 0.7,
+            minTrackingConfidence: 0.7
+        });
+
+        hands.onResults((results) => {
+            if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+                handLandmarks = results.multiHandLandmarks[0];
+            } else {
+                handLandmarks = null;
+            }
+        });
+
+        const cameraFeed = new Camera(videoElement, {
+            onFrame: async () => {
+                await hands.send({ image: videoElement });
+            },
+            width: 1280,
+            height: 720
+        });
+        cameraFeed.start();
+
+        function isPinching(landmarks) {
+            if (!landmarks) return false;
+            const thumbTip = landmarks[4];
+            const indexTip = landmarks[8];
+            const distance = Math.sqrt(
+                Math.pow(thumbTip.x - indexTip.x, 2) +
+                Math.pow(thumbTip.y - indexTip.y, 2)
+            );
+            return distance < 0.05; 
+        }
+        
+        // --- Three.js Particle System Setup (पिछले उत्तर का Section 3A) ---
+        const scene = new THREE.Scene();
+        const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+        const renderer = new THREE.WebGLRenderer();
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        document.body.appendChild(renderer.domElement);
+        camera.position.z = 5;
+
+        const PARTICLE_COUNT = 50000;
+        let particles;
+        let particleGeometry;
+
+        function createParticles() {
+            particleGeometry = new THREE.BufferGeometry();
+            const positions = new Float32Array(PARTICLE_COUNT * 3);
+            const sizes = new Float32Array(PARTICLE_COUNT);
+            const colors = new Float32Array(PARTICLE_COUNT * 3);
+            const templateIds = new Float32Array(PARTICLE_COUNT);
+
+            for (let i = 0; i < PARTICLE_COUNT; i++) {
+                positions[i * 3 + 0] = (Math.random() - 0.5) * 10;
+                positions[i * 3 + 1] = (Math.random() - 0.5) * 10;
+                positions[i * 3 + 2] = (Math.random() - 0.5) * 10;
+
+                sizes[i] = Math.random() * 0.1 + 0.05;
+                colors[i * 3 + 0] = 1.0; colors[i * 3 + 1] = 0.5; colors[i * 3 + 2] = 0.0;
+                templateIds[i] = Math.floor(Math.random() * 3);
+            }
+
+            particleGeometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+            particleGeometry.setAttribute('size', new THREE.BufferAttribute(sizes, 1));
+            particleGeometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+            particleGeometry.setAttribute('templateId', new THREE.BufferAttribute(templateIds, 1));
+
+            const particleMaterial = new THREE.ShaderMaterial({
+                uniforms: {
+                    color: { value: new THREE.Color(0xffffff) },
+                    // नोट: 'spark.png' मौजूद न होने पर त्रुटि हो सकती है। 
+                    // अगर यह फ़ाइल नहीं है, तो लोडर को हटा दें और texture2D कॉल को हटा दें।
+                    pointTexture: { value: new THREE.TextureLoader().load('spark.png') }, 
+                    time: { value: 0.0 },
+                    globalScale: { value: 1.0 },
+                    isPinching: { value: 0.0 },
+                    handPosition: { value: new THREE.Vector3(0, 0, 0) },
+                    currentColorIndex: { value: 0.0 }
+                },
+                vertexShader: document.getElementById('vertexshader').textContent,
+                fragmentShader: document.getElementById('fragmentshader').textContent,
+                blending: THREE.AdditiveBlending,
+                depthTest: false,
+                transparent: true
+            });
+
+            particles = new THREE.Points(particleGeometry, particleMaterial);
+            scene.add(particles);
+        }
+
+        createParticles();
+
+        // --- Animation Loop and Integration (पिछले उत्तर का Section 4) ---
+        let time = 0;
+        let currentColorIndex = 0;
+
+        function animate() {
+            requestAnimationFrame(animate);
+
+            time += 0.01;
+            particles.material.uniforms.time.value = time;
+            
+            if (handLandmarks) {
+                // 1. Pinch Detection
+                const pinching = isPinching(handLandmarks);
+                particles.material.uniforms.isPinching.value = pinching ? 1.0 : 0.0;
+                
+                // 2. Control Particle Size (Expansion)
+                const avgZ = handLandmarks.reduce((sum, l) => sum + l.z, 0) / handLandmarks.length;
+                const globalScale = THREE.MathUtils.mapLinear(avgZ, 0.1, 0.8, 2.0, 0.5);
+                particles.material.uniforms.globalScale.value = globalScale;
+                
+                // 3. Hand Position for Repulsion
+                const mappedX = THREE.MathUtils.mapLinear(handLandmarks[9].x, 0, 1, -5, 5);
+                const mappedY = THREE.MathUtils.mapLinear(handLandmarks[9].y, 0, 1, 5, -5);
+                particles.material.uniforms.handPosition.value.set(mappedX, mappedY, 0); 
+                
+                // 4. Color Cycling on Gesture
+                const colorSpeed = pinching ? 0.05 : 0.005;
+                currentColorIndex = (currentColorIndex + colorSpeed) % 1; 
+                particles.material.uniforms.currentColorIndex.value = currentColorIndex;
+
+            } else {
+                particles.material.uniforms.isPinching.value = 0.0;
+                particles.material.uniforms.globalScale.value = 1.0;
+            }
+
+            renderer.render(scene, camera);
+        }
+
+        animate();
+    </script>
+</body>
+</html>
