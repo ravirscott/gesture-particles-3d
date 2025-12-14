@@ -1,233 +1,349 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8" />
-  <title>Advanced Three.js Shader Particle System</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-
-  <style>
-    html, body {
-      margin: 0;
-      padding: 0;
-      width: 100%;
-      height: 100%;
-      overflow: hidden;
-      background: #000;
-    }
-    canvas {
-      display: block;
-    }
-  </style>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Interactive GLSL Particle System</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            overflow: hidden;
+            background-color: #000000;
+        }
+        canvas {
+            display: block;
+        }
+        #info {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            color: #ffffff;
+            font-family: monospace;
+            pointer-events: none;
+            z-index: 10;
+            background: rgba(0, 0, 0, 0.5);
+            padding: 5px;
+        }
+    </style>
+    <!-- Three.js CDN -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 </head>
 <body>
+    <div id="info">System: <span id="mode">Wavy Cloud</span> | Particles: 80,000</div>
 
-<!-- ===================== VERTEX SHADER ===================== -->
-<script id="vertexShader" type="x-shader/x-vertex">
-precision highp float;
+    <!-- VERTEX SHADER -->
+    <script type="x-shader/x-vertex" id="vertexshader">
+        uniform float time;
+        uniform float currentTemplate;
+        uniform vec3 mousePosition;
+        uniform float globalScale;
+        
+        attribute float size;
+        
+        varying vec3 vColor;
 
-attribute float size;
+        // Constants
+        const float PI = 3.14159265359;
 
-uniform float time;
-uniform float globalScale;
-uniform float currentTemplate;
-uniform vec3 mousePosition;
+        // Helper: Rotate vector
+        vec3 rotateY(vec3 v, float angle) {
+            float c = cos(angle);
+            float s = sin(angle);
+            return vec3(v.x * c + v.z * s, v.y, -v.x * s + v.z * c);
+        }
 
-varying vec3 vColor;
+        // --- TEMPLATE LOGIC ---
+        
+        // 0. Wavy Cloud
+        void templateCloud(vec3 p, float t, out vec3 pos, out vec3 col) {
+            pos = p;
+            pos.x += sin(t + p.y) * 0.5;
+            pos.y += cos(t + p.x) * 0.5;
+            // Dynamic Blue/Cyan
+            col = vec3(0.0, 0.5 + 0.5 * sin(t * 0.8), 1.0);
+        }
 
-vec3 calculatePosition(vec3 p, float t, float templateID) {
+        // 1. Breathing Sphere
+        void templateSphere(vec3 p, float t, out vec3 pos, out vec3 col) {
+            vec3 normP = normalize(p);
+            // Pulse factor
+            float pulse = 1.0 + 0.3 * sin(t * 1.5);
+            pos = normP * length(p) * pulse; // Keep relative distribution but pulse outward
+            // Flatten slightly to form a shell if initial p was random cube, 
+            // but prompt asks to scale normalized p. Let's force sphere shape:
+            pos = normP * 3.0 * pulse; 
+            
+            // Pulsing Fire Color
+            col = vec3(1.0, 0.2 + 0.5 * sin(t * 0.5), 0.0);
+        }
 
-  // ---------- TEMPLATE 0 : WAVY CLOUD ----------
-  if (templateID < 0.5) {
-    float waveX = sin(p.y * 2.0 + t) * 0.5;
-    float waveY = cos(p.x * 2.0 + t * 1.2) * 0.5;
-    vColor = vec3(0.0, 0.5 + 0.5 * sin(t * 0.8), 1.0);
-    return vec3(p.x + waveX, p.y + waveY, p.z);
-  }
+        // 2. Fireworks Burst
+        void templateFireworks(vec3 p, float t, out vec3 pos, out vec3 col) {
+            float phase = fract(t * 0.2); // Slower cycle for visibility
+            
+            // Random direction based on initial position
+            vec3 dir = normalize(p);
+            
+            if (phase < 0.1) {
+                // Reset / Compression phase
+                pos = dir * (phase * 10.0); // Gather center
+            } else {
+                // Explosion phase
+                float expansion = (phase - 0.1) * 15.0; // Rapid expansion
+                pos = dir * expansion;
+            }
+            
+            // Random color based on position modulated by time
+            col = vec3(
+                abs(sin(p.x + t)),
+                abs(cos(p.y + t)),
+                abs(sin(p.z + t))
+            );
+        }
 
-  // ---------- TEMPLATE 1 : BREATHING SPHERE ----------
-  if (templateID < 1.5) {
-    vec3 dir = normalize(p);
-    float pulse = 1.0 + 0.3 * sin(t * 1.5);
-    vColor = vec3(1.0, 0.2 + 0.5 * sin(t * 0.5), 0.0);
-    return dir * pulse * 2.0;
-  }
+        // 3. 2D Heart Shape
+        void templateHeart(vec3 p, float t, out vec3 pos, out vec3 col) {
+            // Map initial Z to parameter t_heart (0 to 2PI)
+            float t_heart = (p.z + 2.0) * PI; 
+            
+            float x = 16.0 * pow(sin(t_heart), 3.0);
+            float y = 13.0 * cos(t_heart) - 5.0 * cos(2.0*t_heart) - 2.0 * cos(3.0*t_heart) - cos(4.0*t_heart);
+            
+            // Scale down to fit view
+            pos = vec3(x * 0.1, y * 0.1, p.x * 0.5); // Use p.x for some depth thickness
+            
+            // Solid Pink/Magenta
+            col = vec3(1.0, 0.2, 0.6);
+        }
 
-  // ---------- TEMPLATE 2 : FIREWORKS BURST ----------
-  if (templateID < 2.5) {
-    float phase = fract(t * 0.1);
-    vec3 dir = normalize(p);
-    float strength = smoothstep(0.0, 1.0, phase) * 6.0;
-    vColor = fract(p * 3.0 + phase);
-    return dir * strength;
-  }
+        // 4. Rotating Saturn Ring
+        void templateSaturn(vec3 p, float t, out vec3 pos, out vec3 col) {
+            // Toroidal Math
+            // Use initial X, Y to define angle theta, phi
+            float theta = p.x * PI;
+            float phi = p.y * PI;
+            float majorR = 3.0;
+            float minorR = 0.5 + p.z * 0.2; // Variation in ring thickness
+            
+            float tx = (majorR + minorR * cos(theta)) * cos(phi);
+            float ty = (majorR + minorR * cos(theta)) * sin(phi); // Actually Z in standard math, but Y here
+            float tz = minorR * sin(theta);
+            
+            vec3 rawPos = vec3(tx, tz, ty); // Flattened ring
+            
+            // Rotation Matrix (Y axis rotation)
+            pos = rotateY(rawPos, t * 0.5);
+            
+            // Icy Blue/White
+            col = vec3(0.5, 0.8, 1.0);
+        }
 
-  // ---------- TEMPLATE 3 : HEART SHAPE ----------
-  if (templateID < 3.5) {
-    float th = p.z * 6.28318;
-    float x = 16.0 * pow(sin(th), 3.0);
-    float y = 13.0 * cos(th)
-            - 5.0 * cos(2.0 * th)
-            - 2.0 * cos(3.0 * th)
-            - cos(4.0 * th);
-    vColor = vec3(1.0, 0.2, 0.6);
-    return vec3(x, y, 0.0) * 0.08;
-  }
+        vec3 calculatePosition(vec3 p, float t, float templateID, out vec3 colorResult) {
+            vec3 finalPos = p;
+            
+            // In a production shader, mixing logic would be cleaner, 
+            // but standard if/else works for strictly defined states.
+            if (templateID < 0.5) {
+                templateCloud(p, t, finalPos, colorResult);
+            } else if (templateID < 1.5) {
+                templateSphere(p, t, finalPos, colorResult);
+            } else if (templateID < 2.5) {
+                templateFireworks(p, t, finalPos, colorResult);
+            } else if (templateID < 3.5) {
+                templateHeart(p, t, finalPos, colorResult);
+            } else {
+                templateSaturn(p, t, finalPos, colorResult);
+            }
+            
+            return finalPos;
+        }
 
-  // ---------- TEMPLATE 4 : SATURN RING ----------
-  float theta = p.x * 3.14159;
-  float phi = p.y * 6.28318;
-  float r = 2.5 + p.z * 0.5;
+        void main() {
+            // 1. Calculate Base Animation Position
+            vec3 animatedPos = calculatePosition(position, time, currentTemplate, vColor);
 
-  float cx = cos(phi) * r;
-  float cz = sin(phi) * r;
+            // 2. Mouse Repulsion Logic
+            // Calculate distance between particle and mouse in world space
+            float dist = distance(animatedPos, mousePosition);
+            
+            if (dist < 2.0) {
+                vec3 repulseDir = normalize(animatedPos - mousePosition);
+                float force = (2.0 - dist) * 0.3; // Strong repulsion
+                animatedPos += repulseDir * force;
+            }
 
-  float rot = t * 0.05;
-  float rx = cx * cos(rot) - cz * sin(rot);
-  float rz = cx * sin(rot) + cz * cos(rot);
+            // 3. Final Transformations
+            vec4 mvPosition = modelViewMatrix * vec4(animatedPos, 1.0);
+            gl_Position = projectionMatrix * mvPosition;
 
-  vColor = vec3(0.5, 0.8, 1.0);
-  return vec3(rx, sin(theta) * 0.2, rz);
-}
+            // 4. Size Attenuation
+            gl_PointSize = size * globalScale * (500.0 / -mvPosition.z);
+        }
+    </script>
 
-void main() {
-  vec3 worldPosition = calculatePosition(position, time, currentTemplate);
+    <!-- FRAGMENT SHADER -->
+    <script type="x-shader/x-fragment" id="fragmentshader">
+        varying vec3 vColor;
+        
+        // Placeholder for texture uniform (technically unused in logic below, but required by prompt)
+        uniform sampler2D pointTexture; 
 
-  // ---------- MOUSE REPULSION ----------
-  float dist = distance(worldPosition, mousePosition);
-  if (dist < 2.0) {
-    vec3 repelDir = normalize(worldPosition - mousePosition);
-    worldPosition += repelDir * (2.0 - dist) * 0.3;
-  }
+        void main() {
+            // Calculate distance from center of the point (0.0 to 0.5)
+            // gl_PointCoord returns vec2(0..1, 0..1)
+            vec2 coord = gl_PointCoord - vec2(0.5);
+            float dist = length(coord);
 
-  vec4 mvPosition = modelViewMatrix * vec4(worldPosition, 1.0);
-  gl_Position = projectionMatrix * mvPosition;
+            // Soft Circle Logic
+            // discard pixels outside circle radius 0.5
+            if (dist > 0.5) discard;
 
-  gl_PointSize = size * globalScale * (500.0 / -mvPosition.z);
-}
-</script>
+            // Smoothstep for glow effect (inner 0.0 to outer 0.5)
+            float alpha = 1.0 - smoothstep(0.0, 0.5, dist);
 
-<!-- ===================== FRAGMENT SHADER ===================== -->
-<script id="fragmentShader" type="x-shader/x-fragment">
-precision highp float;
+            gl_FragColor = vec4(vColor, 1.0) * alpha;
+        }
+    </script>
 
-varying vec3 vColor;
+    <!-- MAIN JAVASCRIPT -->
+    <script>
+        // --- 1. CONFIGURATION ---
+        const PARTICLE_COUNT = 80000;
+        const NUM_TEMPLATES = 5;
+        const TEMPLATE_SWITCH_INTERVAL = 8.0; // Seconds
+        const TEMPLATE_NAMES = [
+            "Wavy Cloud", 
+            "Breathing Sphere", 
+            "Fireworks Burst", 
+            "2D Heart Shape", 
+            "Rotating Saturn Ring"
+        ];
 
-void main() {
-  float d = length(gl_PointCoord - vec2(0.5));
-  float alpha = smoothstep(0.5, 0.0, d);
-  gl_FragColor = vec4(vColor, 1.0) * alpha;
-}
-</script>
+        // --- 2. SETUP ---
+        const scene = new THREE.Scene();
+        
+        // Z = 5 Camera
+        const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+        camera.position.z = 5;
 
-<!-- ===================== THREE.JS APP ===================== -->
-<script src="https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.min.js"></script>
-<script>
-/* ===================== CONSTANTS ===================== */
-const PARTICLE_COUNT = 80000;
-const NUM_TEMPLATES = 5;
-const templateSwitchInterval = 8.0;
+        // Renderer
+        const renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.setPixelRatio(window.devicePixelRatio);
+        document.body.appendChild(renderer.domElement);
 
-/* ===================== SCENE SETUP ===================== */
-const scene = new THREE.Scene();
+        // --- 3. PARTICLES ---
+        const geometry = new THREE.BufferGeometry();
+        const positions = [];
+        const sizes = [];
 
-const camera = new THREE.PerspectiveCamera(
-  60,
-  window.innerWidth / window.innerHeight,
-  0.1,
-  100
-);
-camera.position.z = 5;
+        // Initialize particles
+        for (let i = 0; i < PARTICLE_COUNT; i++) {
+            // Random Cube: -2 to 2
+            const x = (Math.random() * 4) - 2;
+            const y = (Math.random() * 4) - 2;
+            const z = (Math.random() * 4) - 2;
 
-const renderer = new THREE.WebGLRenderer({ antialias: true });
-renderer.setSize(window.innerWidth, window.innerHeight);
-renderer.setPixelRatio(window.devicePixelRatio);
-renderer.setClearColor(0x000000, 1);
-document.body.appendChild(renderer.domElement);
+            positions.push(x, y, z);
 
-/* ===================== GEOMETRY ===================== */
-const geometry = new THREE.BufferGeometry();
+            // Size: 0.05 to 0.2
+            sizes.push(0.05 + Math.random() * 0.15);
+        }
 
-const positions = new Float32Array(PARTICLE_COUNT * 3);
-const sizes = new Float32Array(PARTICLE_COUNT);
+        geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+        geometry.setAttribute('size', new THREE.Float32BufferAttribute(sizes, 1));
 
-for (let i = 0; i < PARTICLE_COUNT; i++) {
-  positions[i * 3 + 0] = (Math.random() * 4 - 2);
-  positions[i * 3 + 1] = (Math.random() * 4 - 2);
-  positions[i * 3 + 2] = (Math.random() * 4 - 2);
-  sizes[i] = Math.random() * 0.15 + 0.05;
-}
+        // Uniforms
+        const uniforms = {
+            time: { value: 0.0 },
+            globalScale: { value: 1.0 },
+            mousePosition: { value: new THREE.Vector3(999, 999, 999) }, // Init off-screen
+            currentTemplate: { value: 0.0 },
+            pointTexture: { value: new THREE.Texture() } // Empty texture prevents 404
+        };
 
-geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-geometry.setAttribute('size', new THREE.BufferAttribute(sizes, 1));
+        const material = new THREE.ShaderMaterial({
+            uniforms: uniforms,
+            vertexShader: document.getElementById('vertexshader').textContent,
+            fragmentShader: document.getElementById('fragmentshader').textContent,
+            blending: THREE.AdditiveBlending,
+            depthTest: false,
+            transparent: true
+        });
 
-/* ===================== UNIFORMS ===================== */
-const uniforms = {
-  time: { value: 0 },
-  globalScale: { value: 1.0 },
-  mousePosition: { value: new THREE.Vector3() },
-  currentTemplate: { value: 0.0 },
-  pointTexture: { value: new THREE.Texture() }
-};
+        const particleSystem = new THREE.Points(geometry, material);
+        scene.add(particleSystem);
 
-/* ===================== MATERIAL ===================== */
-const material = new THREE.ShaderMaterial({
-  uniforms,
-  vertexShader: document.getElementById('vertexShader').textContent,
-  fragmentShader: document.getElementById('fragmentShader').textContent,
-  transparent: true,
-  blending: THREE.AdditiveBlending,
-  depthWrite: false
-});
+        // --- 4. EVENT LISTENERS ---
+        
+        // Resize
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
 
-const points = new THREE.Points(geometry, material);
-scene.add(points);
+        // Mouse Move (Map 2D screen to 3D world at Z approx -2)
+        const mouse = new THREE.Vector2();
+        const raycaster = new THREE.Raycaster();
+        const interactionPlaneZ = -2;
 
-/* ===================== MOUSE HANDLING ===================== */
-const mouse = new THREE.Vector2();
-const raycaster = new THREE.Raycaster();
-const planeZ = new THREE.Plane(new THREE.Vector3(0, 0, 1), 2);
+        window.addEventListener('mousemove', (event) => {
+            // Normalize mouse coordinates (-1 to 1)
+            mouse.x = (event.clientX / window.innerWidth) * 2 - 1;
+            mouse.y = -(event.clientY / window.innerHeight) * 2 + 1;
 
-window.addEventListener('mousemove', (e) => {
-  mouse.x = (e.clientX / window.innerWidth) * 2 - 1;
-  mouse.y = -(e.clientY / window.innerHeight) * 2 + 1;
-  raycaster.setFromCamera(mouse, camera);
-  const hit = new THREE.Vector3();
-  raycaster.ray.intersectPlane(planeZ, hit);
-  uniforms.mousePosition.value.copy(hit);
-});
+            // Unproject logic to find position at specific Z depth
+            // 1. Create vector at mouse position on near plane
+            let vec = new THREE.Vector3(mouse.x, mouse.y, 0.5);
+            
+            // 2. Unproject: converts from screen space to world space
+            vec.unproject(camera);
+            
+            // 3. Calculate direction from camera to this unprojected point
+            vec.sub(camera.position).normalize();
+            
+            // 4. Calculate distance scalar to hit plane Z = -2
+            // formula: distance = (targetZ - cameraZ) / directionZ
+            let distance = (interactionPlaneZ - camera.position.z) / vec.z;
+            
+            // 5. Final position
+            let pos = new THREE.Vector3().copy(camera.position).add(vec.multiplyScalar(distance));
+            
+            uniforms.mousePosition.value.copy(pos);
+        });
 
-/* ===================== RESIZE ===================== */
-window.addEventListener('resize', () => {
-  camera.aspect = window.innerWidth / window.innerHeight;
-  camera.updateProjectionMatrix();
-  renderer.setSize(window.innerWidth, window.innerHeight);
-});
+        // --- 5. ANIMATION LOOP ---
+        const clock = new THREE.Clock();
+        let templateTimer = 0;
+        let currentTemplateIndex = 0;
+        const modeLabel = document.getElementById('mode');
 
-/* ===================== ANIMATION LOOP ===================== */
-let lastTime = performance.now();
-let templateTimer = 0;
-let currentTemplate = 0;
+        function animate() {
+            requestAnimationFrame(animate);
 
-function animate(now) {
-  requestAnimationFrame(animate);
+            const delta = clock.getDelta();
+            const elapsedTime = clock.getElapsedTime();
 
-  const delta = (now - lastTime) * 0.001;
-  lastTime = now;
+            // Update Shader Time
+            uniforms.time.value = elapsedTime;
 
-  uniforms.time.value += delta;
-  templateTimer += delta;
+            // Template Switching Logic
+            templateTimer += delta;
+            if (templateTimer >= TEMPLATE_SWITCH_INTERVAL) {
+                templateTimer = 0;
+                currentTemplateIndex = (currentTemplateIndex + 1) % NUM_TEMPLATES;
+                uniforms.currentTemplate.value = parseFloat(currentTemplateIndex);
+                
+                // Update UI text
+                modeLabel.innerText = TEMPLATE_NAMES[currentTemplateIndex];
+            }
 
-  if (templateTimer > templateSwitchInterval) {
-    templateTimer = 0;
-    currentTemplate = (currentTemplate + 1) % NUM_TEMPLATES;
-    uniforms.currentTemplate.value = currentTemplate;
-  }
+            renderer.render(scene, camera);
+        }
 
-  renderer.render(scene, camera);
-}
-
-animate(performance.now());
-</script>
-
+        animate();
+    </script>
 </body>
 </html>
